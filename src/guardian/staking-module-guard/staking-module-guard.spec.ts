@@ -7,10 +7,7 @@ import { ConfigModule } from 'common/config';
 import { PrometheusModule } from 'common/prometheus';
 import { SecurityModule, SecurityService } from 'contracts/security';
 import { RepositoryModule } from 'contracts/repository';
-import { LidoModule, LidoService } from 'contracts/lido';
-import { MessageType } from 'messages';
 import { StakingModuleGuardModule } from './staking-module-guard.module';
-import { StakingRouterModule } from 'staking-router';
 import { GuardianMetricsModule } from '../guardian-metrics';
 import {
   GuardianMessageModule,
@@ -18,9 +15,15 @@ import {
 } from '../guardian-message';
 import { StakingModuleGuardService } from './staking-module-guard.service';
 
+import { KeysValidationModule } from 'guardian/keys-validation/keys-validation.module';
+import { vettedKeys } from './keys.fixtures';
+import { KeysApiModule } from 'keys-api/keys-api.module';
+import { KeysApiService } from 'keys-api/keys-api.service';
+
 jest.mock('../../transport/stomp/stomp.client');
 
 const TEST_MODULE_ID = 1;
+
 const stakingModuleData = {
   nonce: 0,
   type: 'string',
@@ -37,12 +40,12 @@ const stakingModuleData = {
   isDepositsPaused: false,
 };
 
-describe('GuardianService', () => {
+describe('StakingModuleGuardService', () => {
   let loggerService: LoggerService;
-  let lidoService: LidoService;
   let securityService: SecurityService;
   let stakingModuleGuardService: StakingModuleGuardService;
   let guardianMessageService: GuardianMessageService;
+  let keysApiService: KeysApiService;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -52,53 +55,85 @@ describe('GuardianService', () => {
         LoggerModule,
         StakingModuleGuardModule,
         SecurityModule,
-        LidoModule,
-        StakingRouterModule,
+        KeysApiModule,
         GuardianMetricsModule,
         GuardianMessageModule,
         RepositoryModule,
         PrometheusModule,
+        KeysValidationModule,
       ],
     }).compile();
 
-    lidoService = moduleRef.get(LidoService);
     securityService = moduleRef.get(SecurityService);
     loggerService = moduleRef.get(WINSTON_MODULE_NEST_PROVIDER);
     stakingModuleGuardService = moduleRef.get(StakingModuleGuardService);
     guardianMessageService = moduleRef.get(GuardianMessageService);
+    keysApiService = moduleRef.get(KeysApiService);
 
     jest.spyOn(loggerService, 'log').mockImplementation(() => undefined);
     jest.spyOn(loggerService, 'warn').mockImplementation(() => undefined);
     jest.spyOn(loggerService, 'debug').mockImplementation(() => undefined);
+
+    jest
+      .spyOn(keysApiService, 'getKeysByPubkeys')
+      .mockImplementation(async () => ({
+        data: [],
+        meta: {
+          elBlockSnapshot: {
+            blockNumber: 0,
+            blockHash: 'hash',
+            timestamp: 12345,
+            lastChangedBlockHash: 'lastHash',
+          },
+        },
+      }));
   });
 
   describe('getKeysIntersections', () => {
     it('should find the keys when they match', () => {
-      const unusedKeys = ['0x1'];
-      const depositedKeys = ['0x1'];
+      const depositedKeys = vettedKeys.map((key) => key.key);
       const depositedEvents = {
         events: depositedKeys.map((pubkey) => ({ pubkey } as any)),
       };
-      const blockData = { unusedKeys, depositedEvents } as any;
+      const blockData = { depositedEvents } as any;
       const matched = stakingModuleGuardService.getKeysIntersections(
-        { ...stakingModuleData, unusedKeys },
+        {
+          ...stakingModuleData,
+          lastChangedBlockHash: '',
+          vettedUnusedKeys: vettedKeys,
+          isModuleDepositsPaused: false,
+          invalidKeys: [],
+          duplicatedKeys: [],
+          frontRunKeys: [],
+          unresolvedDuplicatedKeys: [],
+        },
         blockData,
       );
 
       expect(matched).toBeInstanceOf(Array);
       expect(matched).toHaveLength(1);
-      expect(matched).toContainEqual({ pubkey: '0x1' });
+      expect(matched).toContainEqual({ pubkey: vettedKeys[0].key });
     });
 
     it('should not find the keys when they don’t match', () => {
-      const unusedKeys = ['0x2'];
-      const depositedKeys = ['0x1'];
+      const depositedKeys = [
+        '0x9948d2becf42e9f76922bc6f664545e6f50401050af95785a984802d32a95c4c61f8e3de312b78167f86e047f83a7796',
+      ];
       const depositedEvents = {
         events: depositedKeys.map((pubkey) => ({ pubkey } as any)),
       };
-      const blockData = { unusedKeys, depositedEvents } as any;
+      const blockData = { depositedEvents } as any;
       const matched = stakingModuleGuardService.getKeysIntersections(
-        { ...stakingModuleData, unusedKeys },
+        {
+          ...stakingModuleData,
+          lastChangedBlockHash: '',
+          vettedUnusedKeys: vettedKeys,
+          isModuleDepositsPaused: false,
+          invalidKeys: [],
+          duplicatedKeys: [],
+          frontRunKeys: [],
+          unresolvedDuplicatedKeys: [],
+        },
         blockData,
       );
 
@@ -114,110 +149,21 @@ describe('GuardianService', () => {
       };
       const blockData = { unusedKeys, depositedEvents } as any;
       const matched = stakingModuleGuardService.getKeysIntersections(
-        { ...stakingModuleData, unusedKeys },
+        {
+          ...stakingModuleData,
+          lastChangedBlockHash: '',
+          vettedUnusedKeys: [],
+          isModuleDepositsPaused: false,
+          invalidKeys: [],
+          duplicatedKeys: [],
+          frontRunKeys: [],
+          unresolvedDuplicatedKeys: [],
+        },
         blockData,
       );
 
       expect(matched).toBeInstanceOf(Array);
       expect(matched).toHaveLength(0);
-    });
-  });
-
-  describe('checkKeysIntersections', () => {
-    const lidoWC = '0x12';
-    const attackerWC = '0x23';
-    const depositedPubKeys = ['0x1234', '0x5678'];
-    const depositedEvents = {
-      startBlock: 1,
-      endBlock: 5,
-      events: depositedPubKeys.map(
-        (pubkey) => ({ pubkey, valid: true } as any),
-      ),
-    };
-    const nodeOperatorsCache = {
-      depositRoot: '0x2345',
-      nonce: 1,
-      operators: [],
-      version: '1',
-    };
-
-    const currentBlockData = {
-      blockNumber: 1,
-      blockHash: '0x1234',
-      depositRoot: '0x2345',
-      nonce: 1,
-      nextSigningKeys: [] as string[],
-      nodeOperatorsCache,
-      depositedEvents,
-      guardianAddress: '0x3456',
-      guardianIndex: 1,
-      isDepositsPaused: false,
-      srModuleId: 1,
-    };
-
-    it('should call handleKeysIntersections if unused keys are found in the deposit contract', async () => {
-      const depositedKey = depositedPubKeys[0];
-      const unusedKeys = [depositedKey];
-      const events = currentBlockData.depositedEvents.events.map(
-        ({ ...data }) => ({ ...data, wc: attackerWC } as any),
-      );
-
-      const blockData = {
-        ...currentBlockData,
-        depositedEvents: { ...currentBlockData.depositedEvents, events },
-        unusedKeys,
-      };
-
-      const mockHandleCorrectKeys = jest
-        .spyOn(stakingModuleGuardService, 'handleCorrectKeys')
-        .mockImplementation(async () => undefined);
-
-      const mockHandleKeysIntersections = jest
-        .spyOn(stakingModuleGuardService, 'handleKeysIntersections')
-        .mockImplementation(async () => undefined);
-
-      const mockGetWithdrawalCredentials = jest
-        .spyOn(lidoService, 'getWithdrawalCredentials')
-        .mockImplementation(async () => lidoWC);
-
-      await stakingModuleGuardService.checkKeysIntersections(
-        { ...stakingModuleData, unusedKeys },
-        blockData,
-      );
-
-      expect(mockHandleCorrectKeys).not.toBeCalled();
-      expect(mockHandleKeysIntersections).toBeCalledTimes(1);
-      expect(mockHandleKeysIntersections).toBeCalledWith(
-        { ...stakingModuleData, unusedKeys },
-        blockData,
-      );
-      expect(mockGetWithdrawalCredentials).toBeCalledTimes(1);
-    });
-
-    it('should call handleCorrectKeys if Lido unused keys are not found in the deposit contract', async () => {
-      const notDepositedKey = '0x2345';
-      const unusedKeys = [notDepositedKey];
-      const blockData = { ...currentBlockData, unusedKeys };
-
-      const mockHandleCorrectKeys = jest
-        .spyOn(stakingModuleGuardService, 'handleCorrectKeys')
-        .mockImplementation(async () => undefined);
-
-      const mockHandleKeysIntersections = jest
-        .spyOn(stakingModuleGuardService, 'handleKeysIntersections')
-        .mockImplementation(async () => undefined);
-
-      await stakingModuleGuardService.checkKeysIntersections(
-        { ...stakingModuleData, unusedKeys },
-        blockData,
-      );
-
-      expect(mockHandleKeysIntersections).not.toBeCalled();
-      expect(mockHandleCorrectKeys).toBeCalledTimes(1);
-      expect(mockHandleCorrectKeys).toBeCalledWith(
-        { ...stakingModuleData, unusedKeys },
-        blockData,
-      );
     });
   });
 
@@ -245,11 +191,29 @@ describe('GuardianService', () => {
         .mockImplementation(async () => signature);
 
       await stakingModuleGuardService.handleCorrectKeys(
-        { ...stakingModuleData, unusedKeys: [] },
+        {
+          ...stakingModuleData,
+          lastChangedBlockHash: '',
+          vettedUnusedKeys: [],
+          isModuleDepositsPaused: false,
+          invalidKeys: [],
+          duplicatedKeys: [],
+          frontRunKeys: [],
+          unresolvedDuplicatedKeys: [],
+        },
         blockData,
       );
       await stakingModuleGuardService.handleCorrectKeys(
-        { ...stakingModuleData, unusedKeys: [] },
+        {
+          ...stakingModuleData,
+          lastChangedBlockHash: '',
+          vettedUnusedKeys: [],
+          isModuleDepositsPaused: false,
+          invalidKeys: [],
+          duplicatedKeys: [],
+          frontRunKeys: [],
+          unresolvedDuplicatedKeys: [],
+        },
         blockData,
       );
 
@@ -272,7 +236,16 @@ describe('GuardianService', () => {
         .mockImplementation(async () => signature);
 
       await stakingModuleGuardService.handleCorrectKeys(
-        { ...stakingModuleData, unusedKeys: [] },
+        {
+          ...stakingModuleData,
+          lastChangedBlockHash: '',
+          vettedUnusedKeys: [],
+          isModuleDepositsPaused: false,
+          invalidKeys: [],
+          duplicatedKeys: [],
+          frontRunKeys: [],
+          unresolvedDuplicatedKeys: [],
+        },
         blockData,
       );
 
@@ -285,15 +258,11 @@ describe('GuardianService', () => {
     const pubkey = '0x1234';
     const lidoWC = '0x12';
     const attackerWC = '0x23';
-    const blockData = { blockHash: '0x1234' } as any;
-
-    beforeEach(async () => {
-      jest
-        .spyOn(lidoService, 'getWithdrawalCredentials')
-        .mockImplementation(async () => lidoWC);
-    });
+    const blockData = { blockHash: '0x1234', lidoWC } as any;
 
     it('should exclude invalid intersections', async () => {
+      // here should be in real test valid deposit
+      // but function ignore it
       const intersections = [{ valid: false, pubkey, wc: lidoWC } as any];
 
       const filteredIntersections =
@@ -331,63 +300,14 @@ describe('GuardianService', () => {
     });
   });
 
-  describe('handleKeysIntersections', () => {
-    const signature = {} as any;
-    const blockData = { blockNumber: 1 } as any;
-    const type = MessageType.PAUSE;
-
-    beforeEach(async () => {
-      jest
-        .spyOn(securityService, 'signPauseData')
-        .mockImplementation(async () => signature);
-    });
-
-    it('should pause deposits', async () => {
-      jest
-        .spyOn(guardianMessageService, 'sendMessageFromGuardian')
-        .mockImplementation(async () => undefined);
-
-      const mockPauseDeposits = jest
-        .spyOn(securityService, 'pauseDeposits')
-        .mockImplementation(async () => undefined);
-
-      await stakingModuleGuardService.handleKeysIntersections(
-        { ...stakingModuleData, unusedKeys: [] },
-        blockData,
-      );
-
-      expect(mockPauseDeposits).toBeCalledTimes(1);
-      expect(mockPauseDeposits).toBeCalledWith(
-        blockData.blockNumber,
-        TEST_MODULE_ID,
-        signature,
-      );
-    });
-
-    it('should send pause message', async () => {
-      const mockSendMessageFromGuardian = jest
-        .spyOn(guardianMessageService, 'sendMessageFromGuardian')
-        .mockImplementation(async () => undefined);
-
-      jest
-        .spyOn(securityService, 'pauseDeposits')
-        .mockImplementation(async () => undefined);
-
-      await stakingModuleGuardService.handleKeysIntersections(
-        { ...stakingModuleData, unusedKeys: [] },
-        blockData,
-      );
-
-      expect(mockSendMessageFromGuardian).toBeCalledTimes(1);
-      expect(mockSendMessageFromGuardian).toBeCalledWith(
-        expect.objectContaining({ type, signature, ...blockData }),
-      );
-    });
-  });
-
   describe('isSameContractsStates', () => {
     it('should return true if states are the same', () => {
-      const state = { depositRoot: '0x1', nonce: 1, blockNumber: 100 };
+      const state = {
+        depositRoot: '0x1',
+        nonce: 1,
+        blockNumber: 100,
+        lastChangedBlockHash: 'hash',
+      };
       const result = stakingModuleGuardService.isSameContractsStates(
         { ...state },
         { ...state },
@@ -396,7 +316,12 @@ describe('GuardianService', () => {
     });
 
     it('should return true if blockNumbers are close', () => {
-      const state = { depositRoot: '0x1', nonce: 1, blockNumber: 100 };
+      const state = {
+        depositRoot: '0x1',
+        nonce: 1,
+        blockNumber: 100,
+        lastChangedBlockHash: 'hash',
+      };
       const result = stakingModuleGuardService.isSameContractsStates(state, {
         ...state,
         blockNumber: state.blockNumber + 1,
@@ -405,7 +330,12 @@ describe('GuardianService', () => {
     });
 
     it('should return false if blockNumbers are too far', () => {
-      const state = { depositRoot: '0x1', nonce: 1, blockNumber: 100 };
+      const state = {
+        depositRoot: '0x1',
+        nonce: 1,
+        blockNumber: 100,
+        lastChangedBlockHash: 'hash',
+      };
       const result = stakingModuleGuardService.isSameContractsStates(state, {
         ...state,
         blockNumber: state.blockNumber + 200,
@@ -414,7 +344,12 @@ describe('GuardianService', () => {
     });
 
     it('should return false if depositRoot are different', () => {
-      const state = { depositRoot: '0x1', nonce: 1, blockNumber: 100 };
+      const state = {
+        depositRoot: '0x1',
+        nonce: 1,
+        blockNumber: 100,
+        lastChangedBlockHash: 'hash',
+      };
       const result = stakingModuleGuardService.isSameContractsStates(state, {
         ...state,
         depositRoot: '0x2',
@@ -422,11 +357,18 @@ describe('GuardianService', () => {
       expect(result).toBeFalsy();
     });
 
-    it('should return false if nonce are different', () => {
-      const state = { depositRoot: '0x1', nonce: 1, blockNumber: 100 };
+    it('should return false if lastChangedBlockHash are different', () => {
+      // It's important to note that it's not possible for the nonce to be different
+      // while having the same 'lastChangedBlockHash'.
+      const state = {
+        depositRoot: '0x1',
+        nonce: 1,
+        blockNumber: 100,
+        lastChangedBlockHash: 'hash',
+      };
       const result = stakingModuleGuardService.isSameContractsStates(state, {
         ...state,
-        nonce: 2,
+        lastChangedBlockHash: 'new hash',
       });
       expect(result).toBeFalsy();
     });

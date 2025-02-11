@@ -5,7 +5,7 @@ The Lido Council Daemon monitors deposit contract keys and compares them to Lido
 ## Table of Contents
 
 - [Environment Variables](#environment-variables)
-  - [RabbitMQ](#rabbitmq)
+  - [Data Bus Transports](#data-bus-transports)
   - [Wallet Private Key](#wallet-private-key)
   - [Keys-API Configuration](#keys-api-configuration)
 - [Example ENV Config File](#example-env-config-file)
@@ -19,10 +19,12 @@ The Lido Council Daemon monitors deposit contract keys and compares them to Lido
 
 ## Environment Variables
 
-Several environment variables must be set for the daemon to function properly. These variables include RabbitMQ settings, wallet private key, and Keys-API configuration.
+Several environment variables must be set for the daemon to function properly. These variables include Data Bus Transports settings, wallet private key, and Keys-API configuration.
 
-### RabbitMQ
+### Data Bus Transports
+You need to install one of the transports
 
+#### RabbitMQ
 ```env
 ...
 PUBSUB_SERVICE=rabbitmq
@@ -30,6 +32,16 @@ PUBSUB_SERVICE=rabbitmq
 RABBITMQ_URL=<rabbitmq url that supports ws>
 RABBITMQ_LOGIN=<rabbitmq login>
 RABBITMQ_PASSCODE=<rabbitmq password>
+...
+```
+
+#### EVM Chain transport
+```env
+...
+PUBSUB_SERVICE=evm-chain
+
+EVM_CHAIN_DATA_BUS_ADDRESS=<evm transport contract address>
+EVM_CHAIN_DATA_BUS_PROVIDER_URL=<evm chain node url>
 ...
 ```
 
@@ -239,11 +251,30 @@ info: New staking router state cycle end
 
 ## Development
 
+### Copy env file for development and print your RPC_URL
+
+```bash
+cp develop.env ./.env
+```
+
+```diff
+- RPC_URL=%NODE_URL%
++ RPC_URL=https://mainnet.infura.io/v3/***
+```
+
+### Starting the development environment (PostgreSQL, KAPI, Grafana, Prometheus, RabbitMQ)
+
+```bash
+docker-compose -f ./docker-compose.dev.yml up -d
+```
+
+### Run Council Daemon
+
 ```bash
 # development
 $ yarn start
 
-# watch mode
+# development watch mode
 $ yarn start:dev
 ```
 
@@ -274,3 +305,15 @@ $ yarn test:e2e
 # test coverage
 $ yarn test:cov
 ```
+
+To run e2e tests, ensure the RPC_URL environment variable is set to the Goerli provider's endpoint, and generate private keys, which should be subsequently set in the WALLET_PRIVATE_KEY variable.
+
+## Release flow
+
+To create a new release:
+
+1. Merge all changes to the `main` branch.
+1. After the merge, the `Prepare release draft` action will run automatically. When the action is complete, a release draft is created.
+1. When you need to release, go to Repo → Releases.
+1. Publish the desired release draft manually by clicking the edit button - this release is now the `Latest Published`.
+1. After publication, the action to create a release bump will be triggered automatically.

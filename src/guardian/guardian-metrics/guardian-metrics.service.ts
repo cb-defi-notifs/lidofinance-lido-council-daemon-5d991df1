@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { VerifiedDepositEvent } from 'contracts/deposit';
+import { VerifiedDepositEvent } from 'contracts/deposits-registry';
 import { BlockData, StakingModuleData } from '../interfaces';
 import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import {
@@ -7,6 +7,8 @@ import {
   METRIC_DEPOSITED_KEYS_TOTAL,
   METRIC_OPERATORS_KEYS_TOTAL,
   METRIC_INTERSECTIONS_TOTAL,
+  METRIC_INVALID_KEYS_TOTAL,
+  METRIC_DUPLICATED_KEYS_TOTAL,
 } from 'common/prometheus';
 import { Gauge } from 'prom-client';
 
@@ -24,6 +26,12 @@ export class GuardianMetricsService {
 
     @InjectMetric(METRIC_INTERSECTIONS_TOTAL)
     private intersectionsCounter: Gauge<string>,
+
+    @InjectMetric(METRIC_DUPLICATED_KEYS_TOTAL)
+    private duplicatedKeysCounter: Gauge<string>,
+
+    @InjectMetric(METRIC_INVALID_KEYS_TOTAL)
+    private invalidKeysCounter: Gauge<string>,
   ) {}
 
   /**
@@ -92,11 +100,11 @@ export class GuardianMetricsService {
    * @param blockData - collected data from the current block
    */
   public collectOperatorMetrics(stakingModuleData: StakingModuleData): void {
-    const { unusedKeys, stakingModuleId } = stakingModuleData;
+    const { vettedUnusedKeys, stakingModuleId } = stakingModuleData;
 
-    const operatorsKeysTotal = unusedKeys.length;
+    const operatorsKeysTotal = vettedUnusedKeys.length;
     this.operatorsKeysCounter.set(
-      { type: 'unused', stakingModuleId },
+      { type: 'vetted_unused', stakingModuleId },
       operatorsKeysTotal,
     );
   }
@@ -116,5 +124,44 @@ export class GuardianMetricsService {
       { type: 'filtered', stakingModuleId },
       filtered.length,
     );
+  }
+
+  /**
+   * increment duplicated vetted unused keys event counter
+   */
+  public collectDuplicatedKeysMetrics(
+    stakingModuleId: number,
+    allUnresolved: number,
+    unresolved: number,
+    allVettedUnused: number,
+    vettedUnused: number,
+  ) {
+    this.duplicatedKeysCounter.set(
+      { stakingModuleId, type: 'all_unresolved' },
+      allUnresolved,
+    );
+    this.duplicatedKeysCounter.set(
+      { stakingModuleId, type: 'vetted_unused_unresolved' },
+      unresolved,
+    );
+    // resolved - SigningKeyAdded event exists
+    this.duplicatedKeysCounter.set(
+      { stakingModuleId, type: 'all_vetted_unused' },
+      allVettedUnused,
+    );
+    this.duplicatedKeysCounter.set(
+      { stakingModuleId, type: 'vetted_unused' },
+      vettedUnused,
+    );
+  }
+
+  /**
+   * increment invalid keys event counter
+   */
+  public collectInvalidKeysMetrics(
+    stakingModuleId: number,
+    invalidKeysCount: number,
+  ) {
+    this.invalidKeysCounter.set({ stakingModuleId }, invalidKeysCount);
   }
 }
